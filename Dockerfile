@@ -1,5 +1,5 @@
 # ---- Base Node ----
-  FROM node:18-alpine AS base
+  FROM node:22-alpine AS base
   WORKDIR /app
   # Install dependencies only needed for building native modules
   RUN apk add --no-cache build-base python3 
