@@ -1,0 +1,110 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/image-optimizer
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions: write-all
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Prepare image name
+        id: prepare_image_name
+        run: |
+          image_name_lower=$(echo $IMAGE_NAME | tr '[:upper:]' '[:lower:]')
+          echo "::set-output name=image_name::$image_name_lower"
+
+      - name: Extract version
+        id: extract_version
+        run: |
+          git fetch --tags
+          current_tag=$(git tag -l | sort -V | tail -1)
+          new_version_string="1.0.0"
+          if [[ -n "$current_tag" ]]; then
+            # Remove leading 'v' if present
+            version=${current_tag#v}
+
+            # Split by dots
+            IFS='.' read -ra version_parts <<< "$version"
+
+            major_version=${version_parts[0]}
+            minor_version=${version_parts[1]}
+            patch_version=${version_parts[2]}
+
+            new_minor=$((minor_version + 1))
+            new_version_string="${major_version}.${new_minor}.0"
+          fi
+          echo "Current Tag = $current_tag"
+          echo "New Tag = $new_version_string"
+          echo "::set-output name=version::$new_version_string"
+
+      - name: Log into registry
+        run: echo "${{ secrets.GH_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Build image
+        id: build_image
+        run: |
+          docker build -t ${{ steps.prepare_image_name.outputs.image_name }}:${{ steps.extract_version.outputs.version }} -f Dockerfile .
+
+      - name: Push image
+        run: |
+          docker push ${{ steps.prepare_image_name.outputs.image_name }}:${{ steps.extract_version.outputs.version }}
+
+      - name: Create Tag
+        uses: actions/github-script@v6
+        with:
+          script: |
+            github.rest.git.createRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `refs/tags/${{ steps.extract_version.outputs.version }}`,
+                sha: context.sha
+            })
+
+      - name: Create release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_API_TOKEN }}
+        with:
+          tag_name: ${{ steps.extract_version.outputs.version }}
+          release_name: ${{ steps.extract_version.outputs.version }} Release
+          body: |
+            Recent commit message: ${{ github.event.head_commit.message }}
+
+            New version: ${{ steps.extract_version.outputs.version }}
+
+            Example docker-compose.yaml:
+
+            ```yaml
+            services:
+              manager:
+                image: ${{ steps.prepare_image_name.outputs.image_name }}:${{ steps.extract_version.outputs.version }}
+                container_name: image-optimizer
+                restart: unless-stopped
+                ports:
+                  - "3000:3000"
+                healthcheck:
+                  test: ["CMD", "curl", "-f", "http://localhost:3000/"]
+                  interval: 30s
+                  timeout: 10s
+                  retries: 3
+                  start_period: 40s
+                logging:
+                  driver: "json-file"
+                  options:
+                    max-size: "10m"
+                    max-file: "3"
+                environment:
+                  - GOOGLE_ANALYTICS_ID="x"
+                  - APP_URL="https://yourdomain.com"
+                  - APP_NAME="Image Optimizer"
+                  - NEXT_PUBLIC_APP_NAME="Image Optimizer"
+            ```
